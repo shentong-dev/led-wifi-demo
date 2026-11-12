@@ -1,0 +1,621 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>星闪开发板简易仿真器 - NearLink Dev Simulator</title>
+<style>
+/* ============================================================
+全局样式：深色科技风面板
+============================================================ */
+:root {
+--bg: #0d1117; /* 页面背景 */
+--panel: #161b22; /* 面板背景 */
+--panel-2: #1c2330; /* 次级面板背景 */
+--border: #30363d; /* 边框色 */
+--text: #e6edf3; /* 主文字色 */
+--text-dim: #8b949e; /* 次文字色 */
+--accent: #2f81f7; /* 强调色（星闪蓝） */
+--led-off: #10151c; /* 熄灭点颜色 */
+--b: 1; /* 亮度系数（由亮度滑块控制） */
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+background: var(--bg);
+color: var(--text);
+font-family: "Segoe UI", "Microsoft YaHei", Arial, sans-serif;
+display: flex;
+justify-content: center;
+padding: 24px 12px;
+min-height: 100vh;
+}
+.wrap { width: 100%; max-width: 960px; }
+
+/* 页头 */
+header { text-align: center; margin-bottom: 18px; }
+header h1 { font-size: 22px; letter-spacing: 1px; }
+header p { color: var(--text-dim); font-size: 13px; margin-top: 6px; }
+
+/* 仿真面板：模拟开发板外观 */
+.board {
+background: linear-gradient(160deg, #123, #0a2540 60%, #0c3);
+background: linear-gradient(160deg, #0f2740, #123a5c 55%, #14532d);
+border: 2px solid #234;
+border-radius: 14px;
+padding: 18px;
+box-shadow: 0 8px 30px rgba(0,0,0,.5), inset 0 0 40px rgba(0,0,0,.35);
+}
+
+/* 板载信息行：型号 + 星闪状态指示灯 */
+.board-top {
+display: flex; align-items: center; justify-content: space-between;
+margin-bottom: 12px; flex-wrap: wrap; gap: 8px;
+}
+.board-model { font-size: 13px; color: #9fd0ff; letter-spacing: 2px; }
+.nl-status { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-dim); }
+.nl-led {
+width: 12px; height: 12px; border-radius: 50%;
+background: #555; transition: background .3s;
+}
+/* 星闪指示灯：搜索中 = 蓝色呼吸闪烁 */
+.nl-led.searching {
+background: var(--accent);
+animation: breathe 1.4s ease-in-out infinite;
+}
+/* 星闪指示灯：已连接 = 常亮绿色 */
+.nl-led.connected { background: #39ff5a; box-shadow: 0 0 8px #39ff5a; }
+@keyframes breathe {
+0%, 100% { opacity: .25; box-shadow: none; }
+50% { opacity: 1; box-shadow: 0 0 10px var(--accent); }
+}
+
+/* ============================================================
+点阵 LED 屏：64 列 x 16 行方块
+============================================================ */
+.screen-frame {
+background: #000;
+border: 6px solid #222c38;
+border-radius: 8px;
+padding: 8px;
+}
+.screen {
+display: grid;
+grid-template-columns: repeat(64, 1fr);
+gap: 2px;
+aspect-ratio: 64 / 16; /* 保持点阵比例 */
+}
+.dot {
+background: var(--led-off); /* 熄灭：深色 */
+border-radius: 2px; /* 微圆角方块 */
+aspect-ratio: 1 / 1;
+}
+/* 点亮：亮绿色，带辉光，透明度受亮度系数 --b 控制 */
+.dot.on {
+background: #39ff5a;
+opacity: var(--b);
+box-shadow: 0 0 calc(var(--b) * 6px) rgba(57, 255, 90, calc(var(--b) * .9));
+}
+
+/* ============================================================
+控制区：烧录 / 复位按钮、进度条、加载动画
+============================================================ */
+.controls {
+display: flex; align-items: center; gap: 10px;
+margin-top: 14px; flex-wrap: wrap;
+}
+.btn {
+padding: 9px 22px; border: none; border-radius: 8px;
+font-size: 14px; font-weight: 600; cursor: pointer;
+color: #fff; transition: transform .1s, filter .2s;
+}
+.btn:hover:not(:disabled) { filter: brightness(1.2); }
+.btn:active:not(:disabled) { transform: scale(.96); }
+.btn:disabled { opacity: .45; cursor: not-allowed; }
+.btn.burn { background: #e8590c; } /* 烧录：橙色 */
+.btn.reset { background: #495057; } /* 复位：灰色 */
+
+/* 进度条（烧录时的加载动画） */
+.progress {
+flex: 1; min-width: 140px; height: 10px;
+background: #0a0f16; border: 1px solid var(--border);
+border-radius: 6px; overflow: hidden;
+}
+.progress-fill {
+height: 100%; width: 0%;
+background: linear-gradient(90deg, #e8590c, #ffd43b);
+transition: width .25s ease;
+}
+/* 转圈加载动画 */
+.spinner {
+display: none; width: 16px; height: 16px;
+border: 3px solid #333; border-top-color: #ffd43b;
+border-radius: 50%; animation: spin .8s linear infinite;
+}
+.spinner.show { display: inline-block; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ============================================================
+功能区：文字输入 / 滚动开关 / 亮度滑块
+============================================================ */
+.features {
+display: flex; gap: 14px; margin-top: 14px; flex-wrap: wrap;
+align-items: center; font-size: 13px;
+}
+.features label { color: var(--text-dim); }
+.features input[type="text"] {
+flex: 1; min-width: 160px; padding: 8px 10px;
+background: #0a0f16; color: var(--text);
+border: 1px solid var(--border); border-radius: 6px; font-size: 13px;
+}
+.features input[type="range"] { width: 120px; vertical-align: middle; }
+.switch { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
+
+/* ============================================================
+串口控制台
+============================================================ */
+.console-panel {
+margin-top: 16px; background: #010409;
+border: 1px solid var(--border); border-radius: 8px; overflow: hidden;
+}
+.console-head {
+padding: 6px 12px; background: #11161d;
+font-size: 12px; color: var(--text-dim);
+display: flex; justify-content: space-between; align-items: center;
+}
+.console-log {
+height: 150px; overflow-y: auto; padding: 8px 12px;
+font-family: Consolas, "Courier New", monospace; font-size: 12px;
+line-height: 1.7;
+}
+.console-log .t { color: #558; } /* 时间戳 */
+.console-log .info { color: #58a6ff; } /* 信息 */
+.console-log .ok { color: #39ff5a; } /* 成功 */
+.console-log .warn { color: #ffd43b; } /* 警告 */
+.console-log .err { color: #ff6b6b; } /* 错误 */
+.console-log .cmd { color: #d2a8ff; } /* 用户命令回显 */
+.console-input-row {
+display: flex; border-top: 1px solid var(--border);
+}
+.console-input-row span {
+padding: 8px 4px 8px 12px; color: #39ff5a;
+font-family: Consolas, monospace; font-size: 13px;
+}
+.console-input-row input {
+flex: 1; background: transparent; border: none; outline: none;
+color: #39ff5a; padding: 8px 12px 8px 4px;
+font-family: Consolas, monospace; font-size: 13px;
+}
+
+/* 页脚提示 */
+footer { text-align: center; color: var(--text-dim); font-size: 12px; margin-top: 16px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+<header>
+<h1>⚡ 星闪开发板简易仿真器</h1>
+<p>NearLink Dev Board Simulator — 纯 HTML + CSS + JavaScript 实现，无需真实硬件</p>
+</header>
+
+<div class="board">
+<!-- 板载信息：型号 + 星闪状态指示灯（加分项） -->
+<div class="board-top">
+<span class="board-model">WS63-DEVKIT · NearLink</span>
+<span class="nl-status">
+星闪状态 <span id="nlLed" class="nl-led searching"></span><span id="nlText">搜索中...</span>
+</span>
+</div>
+
+<!-- 点阵 LED 屏：64 x 16，由 JS 动态生成 1024 个方块 -->
+<div class="screen-frame">
+<div id="screen" class="screen"></div>
+</div>
+
+<!-- 控制区：烧录 / 复位 + 进度条 + 加载动画 -->
+<div class="controls">
+<button id="btnBurn" class="btn burn">🔥 烧录</button>
+<button id="btnReset" class="btn reset">复位</button>
+<span id="spinner" class="spinner"></span>
+<div class="progress"><div id="progressFill" class="progress-fill"></div></div>
+</div>
+
+<!-- 加分功能：自定义文字输入 / 滚动字幕开关 / 亮度调节 -->
+<div class="features">
+<label>自定义文字：</label>
+<input type="text" id="textInput" maxlength="20" placeholder="输入要显示的文字（默认 hollowold）">
+<label class="switch"><input type="checkbox" id="scrollToggle"> 滚动字幕</label>
+<label>亮度 <input type="range" id="brightness" min="20" max="100" value="100"> <span id="brightVal">100%</span></label>
+</div>
+
+<!-- 加分功能：串口控制台（支持命令交互） -->
+<div class="console-panel">
+<div class="console-head">
+<span>串口控制台 · Serial Monitor @ 115200</span>
+<span>输入 help 查看命令</span>
+</div>
+<div id="consoleLog" class="console-log"></div>
+<div class="console-input-row">
+<span>&gt;</span>
+<input type="text" id="consoleInput" placeholder="命令如: text hello / scroll on / brightness 80 / reset" autocomplete="off">
+</div>
+</div>
+</div>
+
+<footer>作业演示 · 点阵渲染逻辑纯手写 · 不依赖任何外部资源</footer>
+</div>
+
+<script>
+"use strict";
+/* ============================================================
+* 一、内置 5x7 字符字模库
+* 每个字符用 7 行、每行 5 列的 '#'/'.' 字符串描述，
+* 直观易读，也方便自行扩充新字符。
+* ============================================================ */
+const FONT = {
+"A": [".###.","#...#","#...#","#####","#...#","#...#","#...#"],
+"B": ["####.","#...#","#...#","####.","#...#","#...#","####."],
+"C": [".###.","#...#","#....","#....","#....","#...#",".###."],
+"D": ["####.","#...#","#...#","#...#","#...#","#...#","####."],
+"E": ["#####","#....","#....","####.","#....","#....","#####"],
+"F": ["#####","#....","#....","####.","#....","#....","#...."],
+"G": [".###.","#...#","#....","#.###","#...#","#...#",".###."],
+"H": ["#...#","#...#","#...#","#####","#...#","#...#","#...#"],
+"I": ["#####","..#..","..#..","..#..","..#..","..#..","#####"],
+"J": ["..###","...#.","...#.","...#.","...#.","#..#.",".##.."],
+"K": ["#...#","#..#.","#.#..","##...","#.#..","#..#.","#...#"],
+"L": ["#....","#....","#....","#....","#....","#....","#####"],
+"M": ["#...#","##.##","#.#.#","#.#.#","#...#","#...#","#...#"],
+"N": ["#...#","##..#","#.#.#","#..##","#...#","#...#","#...#"],
+"O": [".###.","#...#","#...#","#...#","#...#","#...#",".###."],
+"P": ["####.","#...#","#...#","####.","#....","#....","#...."],
+"Q": [".###.","#...#","#...#","#...#","#.#.#","#..#.",".##.#"],
+"R": ["####.","#...#","#...#","####.","#.#..","#..#.","#...#"],
+"S": [".####","#....","#....",".###.","....#","....#","####."],
+"T": ["#####","..#..","..#..","..#..","..#..","..#..","..#.."],
+"U": ["#...#","#...#","#...#","#...#","#...#","#...#",".###."],
+"V": ["#...#","#...#","#...#","#...#","#...#",".#.#.","..#.."],
+"W": ["#...#","#...#","#...#","#.#.#","#.#.#","##.##","#...#"],
+"X": ["#...#","#...#",".#.#.","..#..",".#.#.","#...#","#...#"],
+"Y": ["#...#","#...#",".#.#.","..#..","..#..","..#..","..#.."],
+"Z": ["#####","....#","...#.","..#..",".#...","#....","#####"],
+"0": [".###.","#...#","#..##","#.#.#","##..#","#...#",".###."],
+"1": ["..#..",".##..","..#..","..#..","..#..","..#..","#####"],
+"2": [".###.","#...#","....#","...#.","..#..",".#...","#####"],
+"3": ["#####","...#.","..#..","...#.","....#","#...#",".###."],
+"4": ["...#.","..##.",".#.#.","#..#.","#####","...#.","...#."],
+"5": ["#####","#....","####.","....#","....#","#...#",".###."],
+"6": ["..##.",".#...","#....","####.","#...#","#...#",".###."],
+"7": ["#####","....#","...#.","..#..",".#...",".#...",".#..."],
+"8": [".###.","#...#","#...#",".###.","#...#","#...#",".###."],
+"9": [".###.","#...#","#...#",".####","....#","...#.",".##.."],
+" ": [".....",".....",".....",".....",".....",".....","....."],
+".": [".....",".....",".....",".....",".....",".##..",".##.."],
+",": [".....",".....",".....",".....",".##..",".##..","..#.."],
+"!": ["....#","....#","....#","....#",".....","..#..","..#.."],
+"?": [".###.","#...#","....#","..##.","..#..",".....","..#.."],
+":": [".....",".##..",".##..",".....",".##..",".##..","....."],
+"-": [".....",".....",".....","#####",".....",".....","....."],
+"_": [".....",".....",".....",".....",".....",".....","#####"],
+"'": ["...#.","...#.",".....",".....",".....",".....","....."],
+"/": ["....#","....#","...#.","..#..",".#...","#....","#...."],
+"+": [".....","..#..","..#..","#####","..#..","..#..","....."],
+"=": [".....",".....","#####",".....","#####",".....","....."],
+"*": [".....","#.#.#",".###.","#####",".###.","#.#.#","....."]
+};
+/* 未知字符的兜底字模：实心方块 */
+const FONT_UNKNOWN = ["#####","#####","#####","#####","#####","#####","#####"];
+const CHAR_W = 5, CHAR_H = 7, CHAR_GAP = 1; // 字宽 5、字高 7、字间距 1
+
+/* ============================================================
+* 二、屏幕与全局状态
+* ============================================================ */
+const COLS = 64, ROWS = 16; // 点阵规格：64 列 x 16 行
+const screen = document.getElementById("screen");
+const dots = []; // 保存 1024 个方块 DOM 引用
+const state = {
+text: "hollowold", // 默认显示字符串（在源码此处修改文字即可）
+burned: false, // 是否已完成烧录
+scroll: false, // 是否开启滚动字幕
+brightness: 100, // 亮度百分比
+scrollTimer: null, // 滚动定时器
+scrollPos: 0 // 滚动偏移量
+};
+
+/* 初始化：生成 64x16 = 1024 个 LED 方块 */
+(function buildScreen() {
+for (let i = 0; i < COLS * ROWS; i++) {
+const d = document.createElement("div");
+d.className = "dot";
+screen.appendChild(d);
+dots.push(d);
+}
+})();
+
+/* ============================================================
+* 三、核心点阵渲染逻辑（纯手写，不借助任何图形库）
+* ============================================================ */
+
+/* 取得某字符的 7x5 字模；找不到则用实心方块兜底 */
+function getGlyph(ch) {
+return FONT[ch.toUpperCase()] || FONT_UNKNOWN;
+}
+
+/* 把字符串展开成"列位图"：
+* 返回数组 columns[x]，每个元素是长度 7 的布尔数组（该列每行是否点亮）。
+* 每个字符占 5 列，字符之间空 1 列。 */
+function textToColumns(text) {
+const columns = [];
+for (const ch of text) {
+const glyph = getGlyph(ch);
+for (let cx = 0; cx < CHAR_W; cx++) {
+const col = [];
+for (let cy = 0; cy < CHAR_H; cy++) col.push(glyph[cy][cx] === "#");
+columns.push(col);
+}
+if (CHAR_GAP) for (let k = 0; k < CHAR_GAP; k++) columns.push(new Array(CHAR_H).fill(false));
+}
+return columns;
+}
+
+/* 计算文字位图的总宽度（列数），空串按 1 列处理 */
+function textWidth(text) {
+if (!text.length) return 1;
+return text.length * (CHAR_W + CHAR_GAP) - CHAR_GAP;
+}
+
+/* 把整屏 buffer（ROWS 行字符串或二维数组）刷到 LED 方块上 */
+function render(buffer) {
+for (let y = 0; y < ROWS; y++) {
+for (let x = 0; x < COLS; x++) {
+dots[y * COLS + x].classList.toggle("on", !!buffer[y][x]);
+}
+}
+}
+
+/* 生成"静止显示"的整屏缓冲：文字垂直居中、水平居中（超出则截断） */
+function buildStaticBuffer(text) {
+const buf = Array.from({ length: ROWS }, () => new Array(COLS).fill(false));
+const cols = textToColumns(text);
+const top = Math.floor((ROWS - CHAR_H) / 2); // 垂直居中
+let left = Math.floor((COLS - cols.length) / 2); // 水平居中
+if (left < 0) left = 0; // 太宽则靠左截断
+for (let x = 0; x < cols.length && left + x < COLS; x++) {
+for (let y = 0; y < CHAR_H; y++) {
+if (cols[x][y]) buf[top + y][left + x] = true;
+}
+}
+return buf;
+}
+
+/* 生成"滚动字幕"的整屏缓冲：以 scrollPos 为偏移循环取列 */
+function buildScrollBuffer(text) {
+const buf = Array.from({ length: ROWS }, () => new Array(COLS).fill(false));
+const cols = textToColumns(text + " "); // 末尾加 3 空格作为循环间隔
+const total = cols.length;
+const top = Math.floor((ROWS - CHAR_H) / 2);
+for (let x = 0; x < COLS; x++) {
+const src = cols[(state.scrollPos + x) % total]; // 循环滚动
+for (let y = 0; y < CHAR_H; y++) {
+if (src[y]) buf[top + y][x] = true;
+}
+}
+return buf;
+}
+
+/* 按当前状态（是否滚动 / 是否已烧录）刷新整屏 */
+function refresh() {
+if (!state.burned) {
+render(Array.from({ length: ROWS }, () => new Array(COLS).fill(false))); // 未烧录：全黑
+return;
+}
+render(state.scroll ? buildScrollBuffer(state.text) : buildStaticBuffer(state.text));
+}
+
+/* 滚动字幕：定时器每 150ms 左移一列 */
+function startScroll() {
+stopScroll();
+state.scrollTimer = setInterval(() => {
+state.scrollPos = (state.scrollPos + 1) % textWidth(state.text + " ");
+refresh();
+}, 150);
+}
+function stopScroll() {
+if (state.scrollTimer) { clearInterval(state.scrollTimer); state.scrollTimer = null; }
+}
+
+/* ============================================================
+* 四、星闪状态指示灯
+* ============================================================ */
+const nlLed = document.getElementById("nlLed");
+const nlText = document.getElementById("nlText");
+function setNearLink(mode) {
+nlLed.className = "nl-led " + (mode === "connected" ? "connected" : "searching");
+nlText.textContent = mode === "connected" ? "已连接" : "搜索中...";
+}
+
+/* ============================================================
+* 五、串口控制台（加分项）
+* ============================================================ */
+const consoleLog = document.getElementById("consoleLog");
+const consoleInput = document.getElementById("consoleInput");
+
+function now() {
+const d = new Date();
+const p = n => String(n).padStart(2, "0");
+return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+/* 向控制台打印一行：type 为 info/ok/warn/err/cmd */
+function log(msg, type = "info") {
+const line = document.createElement("div");
+line.innerHTML = `<span class="t">[${now()}]</span> <span class="${type}">${msg}</span>`;
+consoleLog.appendChild(line);
+consoleLog.scrollTop = consoleLog.scrollHeight; // 自动滚到底部
+}
+
+/* 串口命令解析：支持 text / scroll / brightness / reset / clear / help */
+function handleCommand(raw) {
+const input = raw.trim();
+if (!input) return;
+log(input, "cmd");
+const [cmd, ...args] = input.split(/\s+/);
+const arg = args.join(" ");
+switch (cmd.toLowerCase()) {
+case "help":
+log("可用命令: text &lt;内容&gt; | scroll on|off | brightness 20-100 | reset | clear | info");
+break;
+case "text":
+if (!arg) { log("用法: text <内容>", "warn"); break; }
+setText(arg, "串口");
+break;
+case "scroll":
+setScroll(arg === "on", "串口");
+break;
+case "brightness": {
+const v = parseInt(arg, 10);
+if (isNaN(v) || v < 20 || v > 100) { log("亮度范围 20-100", "warn"); break; }
+setBrightness(v, "串口");
+break;
+}
+case "reset":
+doReset();
+break;
+case "clear":
+consoleLog.innerHTML = "";
+break;
+case "info":
+log(`设备: WS63-DEVKIT | 固件: ${state.burned ? "已烧录" : "空"} | 文字: "${state.text}" | 滚动: ${state.scroll ? "开" : "关"} | 亮度: ${state.brightness}%`);
+break;
+default:
+log(`未知命令: ${cmd}（输入 help 查看帮助）`, "err");
+}
+}
+consoleInput.addEventListener("keydown", e => {
+if (e.key === "Enter") {
+handleCommand(consoleInput.value);
+consoleInput.value = "";
+}
+});
+
+/* ============================================================
+* 六、烧录流程：模拟编译提示 + 加载动画 + 完成后点亮屏幕
+* ============================================================ */
+const btnBurn = document.getElementById("btnBurn");
+const btnReset = document.getElementById("btnReset");
+const progressFill = document.getElementById("progressFill");
+const spinner = document.getElementById("spinner");
+const textInput = document.getElementById("textInput");
+const scrollToggle = document.getElementById("scrollToggle");
+const brightnessSlider = document.getElementById("brightness");
+const brightVal = document.getElementById("brightVal");
+
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const setProgress = p => progressFill.style.width = p + "%";
+
+async function doBurn() {
+if (state.burned) return; // 防止重复烧录
+btnBurn.disabled = true;
+btnReset.disabled = true;
+spinner.classList.add("show");
+
+log("nircon build --target ws63", "cmd");
+await sleep(400);
+log("[1/4] 解析源码 app/main.c ...");
+await sleep(600);
+log("[2/4] 编译中，正在生成目标文件 ...");
+/* 模拟编译进度：进度条 0% → 100% */
+for (let p = 0; p <= 100; p += 10) {
+setProgress(p);
+await sleep(120);
+}
+log("[3/4] 链接完成，生成固件 firmware.bin (128 KB)", "ok");
+await sleep(500);
+log("[4/4] 通过星闪 NearLink 烧写固件到开发板 ...", "warn");
+await sleep(900);
+
+/* 烧录完成：点亮屏幕、星闪指示灯转为已连接 */
+state.burned = true;
+state.scrollPos = 0;
+refresh();
+if (state.scroll) startScroll();
+setNearLink("connected");
+log("烧录完成 ✓ 屏幕已点亮，显示: " + state.text, "ok");
+
+spinner.classList.remove("show");
+setProgress(0);
+btnBurn.disabled = true; // 已烧录，烧录按钮保持禁用
+btnReset.disabled = false;
+}
+
+/* ============================================================
+* 七、复位：清空屏幕，回到上电初始状态
+* ============================================================ */
+function doReset() {
+stopScroll();
+state.burned = false;
+state.scroll = false;
+scrollToggle.checked = false;
+refresh(); // 清空屏幕（全黑）
+setNearLink("searching"); // 星闪回到"搜索中"
+setProgress(0);
+btnBurn.disabled = false; // 允许重新烧录
+btnReset.disabled = true;
+log("系统复位，屏幕已清空，等待烧录 ...", "warn");
+}
+btnBurn.addEventListener("click", doBurn);
+btnReset.addEventListener("click", doReset);
+
+/* ============================================================
+* 八、自定义文字 / 滚动开关 / 亮度调节
+* ============================================================ */
+
+/* 修改文字：烧录后立即生效，未烧录则只记录待烧录内容 */
+function setText(t, from = "输入框") {
+state.text = t;
+textInput.value = t;
+state.scrollPos = 0;
+if (state.burned) {
+refresh();
+log(`${from}设置文字: "${t}" 已更新到屏幕`, "ok");
+} else {
+log(`${from}设置文字: "${t}"（请先点击烧录）`);
+}
+}
+/* 滚动字幕开关 */
+function setScroll(on, from = "输入框") {
+state.scroll = on;
+scrollToggle.checked = on;
+if (state.burned) {
+on ? startScroll() : (stopScroll(), refresh());
+log(`${from}设置滚动字幕: ${on ? "开" : "关"}`, "ok");
+} else {
+log(`${from}设置滚动字幕: ${on ? "开" : "关"}（烧录后生效）`);
+}
+}
+/* 亮度调节：只影响点亮像素（CSS 变量 --b） */
+function setBrightness(v, from = "滑块") {
+state.brightness = v;
+screen.style.setProperty("--b", v / 100);
+brightnessSlider.value = v;
+brightVal.textContent = v + "%";
+if (from !== "滑块") log(`${from}设置亮度: ${v}%`, "ok");
+}
+
+textInput.addEventListener("change", () => {
+if (textInput.value.trim()) setText(textInput.value.trim());
+});
+scrollToggle.addEventListener("change", () => setScroll(scrollToggle.checked));
+brightnessSlider.addEventListener("input", () => setBrightness(+brightnessSlider.value, "滑块"));
+
+/* ============================================================
+* 九、上电初始化：串口打印欢迎信息，屏幕全黑，星闪搜索中
+* ============================================================ */
+log("WorkBuddy Serial Monitor 已连接 (115200 baud)", "ok");
+log("WS63-DEVKIT 上电自检完成，星闪模块初始化 ...");
+log("等待烧录固件。提示: 修改源码顶部 state.text 可更换默认文字。");
+refresh();
+btnReset.disabled = true;
+</script>
+</body>
+</html>
+
+
